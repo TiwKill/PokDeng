@@ -97,23 +97,45 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
         [broadcast],
     )
 
-    // Handle incoming messages
+    // Handle incoming messages - แก้ไขให้อัพเดต state ได้ถูกต้อง
     const handleMessage = useCallback(
         (message: PeerMessage) => {
+            console.log("[Peer] Handling message type:", message.type, "from:", message.senderId)
+            
             setRoomState((prevState) => {
-                if (!prevState) return prevState
+                // สำหรับ sync message: ควรตั้งค่าใหม่ทั้งหมด (ไม่ใช้ prevState)
+                if (message.type === "sync") {
+                    const newState = message.payload as RoomState
+                    console.log("[Peer] Setting roomState from sync:", newState)
+                    return newState
+                }
+
+                // สำหรับ start message: ควรตั้งค่าใหม่ทั้งหมด
+                if (message.type === "start") {
+                    const newState = message.payload as RoomState
+                    console.log("[Peer] Setting roomState from start:", newState)
+                    return newState
+                }
+
+                // ถ้ายังไม่มี prevState และไม่ใช่ sync/start message ให้ return null
+                if (!prevState) {
+                    console.log("[Peer] No prevState, ignoring message type:", message.type)
+                    return prevState
+                }
 
                 switch (message.type) {
                     case "join": {
                         const newPlayer = message.payload as Player
                         // Check if player already exists
                         if (prevState.players.some((p) => p.id === newPlayer.id)) {
+                            console.log("[Peer] Player already exists:", newPlayer.id)
                             return prevState
                         }
                         const newState = {
                             ...prevState,
                             players: [...prevState.players, { ...newPlayer, isOnline: true }],
                         }
+                        console.log("[Peer] Added new player:", newPlayer.name)
                         if (isHost) {
                             // Schedule sync after state update
                             setTimeout(() => syncRoomState(newState), 0)
@@ -127,6 +149,7 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
                             ...prevState,
                             players: prevState.players.filter((p) => p.id !== playerId),
                         }
+                        console.log("[Peer] Player left:", playerId)
                         if (isHost) {
                             setTimeout(() => syncRoomState(newState), 0)
                         }
@@ -137,8 +160,11 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
                         const { playerId, ready } = message.payload as { playerId: string; ready: boolean }
                         const newState = {
                             ...prevState,
-                            players: prevState.players.map((p) => (p.id === playerId ? { ...p, isReady: ready } : p)),
+                            players: prevState.players.map((p) => 
+                                p.id === playerId ? { ...p, isReady: ready } : p
+                            ),
                         }
+                        console.log("[Peer] Player ready status:", playerId, ready)
                         if (isHost) {
                             setTimeout(() => syncRoomState(newState), 0)
                         }
@@ -147,21 +173,16 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
 
                     case "chat": {
                         const chatMsg = message.payload as ChatMessage
-                        return {
+                        const newState = {
                             ...prevState,
                             messages: [...prevState.messages, chatMsg],
                         }
-                    }
-
-                    case "sync": {
-                        return message.payload as RoomState
-                    }
-
-                    case "start": {
-                        return message.payload as RoomState
+                        console.log("[Peer] Chat message from:", chatMsg.playerName)
+                        return newState
                     }
 
                     default:
+                        console.log("[Peer] Unknown message type:", message.type)
                         return prevState
                 }
             })
@@ -174,12 +195,9 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
         handleMessageRef.current = handleMessage
     }, [handleMessage])
 
-    // Initialize Peer - แก้ไข Peer ID ให้ตรงกันระหว่าง Host และ Guest
+    // Initialize Peer
     useEffect(() => {
         const currentProfile = profileRef.current
-        // ใช้รูปแบบ Peer ID เดียวกันทั้ง Host และ Guest
-        // Host: pokdeng-{roomCode}
-        // Guest: pokdeng-{roomCode}-{playerId}
         const peerIdStr = isHost 
             ? `pokdeng-${roomCode}`
             : `pokdeng-${roomCode}-${currentProfile.id}`
@@ -190,7 +208,7 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
         
         try {
             peer = new Peer(peerIdStr, {
-                debug: 0,
+                debug: 2, // เพิ่ม debug level
                 config: {
                     iceServers: [
                         { urls: 'stun:stun.l.google.com:19302' },
@@ -200,7 +218,7 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
             })
         } catch (err) {
             console.error("Failed to create Peer instance:", err)
-            peer = new Peer(peerIdStr, { debug: 0 })
+            peer = new Peer(peerIdStr, { debug: 2 })
         }
 
         const setupConnectionInternal = (conn: DataConnection) => {
@@ -213,6 +231,7 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
 
                 // Send current room state to new peer
                 if (isHost && roomStateRef.current) {
+                    console.log("[Peer] Sending initial sync to new connection")
                     const syncMessage: PeerMessage = {
                         type: "sync",
                         payload: roomStateRef.current,
@@ -250,9 +269,9 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
 
             if (isHost) {
                 const initialState = initializeRoomState()
+                console.log("[Peer] Host initialized room state:", initialState)
                 setRoomState(initialState)
                 roomStateRef.current = initialState
-                console.log("[Peer] Host initialized room state:", initialState)
             } else {
                 console.log("[Peer] Guest ready to join room")
             }
@@ -266,16 +285,8 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
         peer.on("error", (err) => {
             console.error("[Peer] Peer error:", err)
             if (err.type === "unavailable-id") {
-                console.log("[Peer] ID unavailable, retrying with different ID...")
-                // ถ้า Host ID ถูกใช้แล้ว (จาก session ก่อนหน้า) ให้พยายามสร้างใหม่
-                if (isHost) {
-                    const newPeerId = `pokdeng-${roomCode}-${Date.now()}`
-                    console.log(`[Peer] Retrying with new ID: ${newPeerId}`)
-                    // ต้องทำการ reconnect ด้วย ID ใหม่
-                    // แต่ PeerJS ไม่ support การเปลี่ยน ID ได้ง่ายๆ
-                    // ให้ user ลองใหม่อีกครั้งดีกว่า
-                    setIsConnected(false)
-                }
+                console.log("[Peer] ID unavailable")
+                setIsConnected(false)
             } else if (err.type === "network" || err.type === "server-error") {
                 console.log("[Peer] Network/server error")
                 setIsConnected(false)
@@ -371,7 +382,7 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
                             connection.send(joinMessage)
                             if (!resolved) {
                                 resolved = true
-                                console.log("[Peer] Successfully joined room")
+                                console.log("[Peer] Successfully joined room, waiting for sync...")
                                 resolve(true)
                             }
                         } catch (err) {
@@ -386,7 +397,9 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
                     connection.on("data", (data) => {
                         try {
                             console.log("[Peer] Received data from host:", data)
-                            handleMessageRef.current(data as PeerMessage)
+                            const message = data as PeerMessage
+                            // อัพเดต state ทันที
+                            handleMessageRef.current(message)
                         } catch (err) {
                             console.error("[Peer] Error handling connection data:", err)
                         }
@@ -425,10 +438,11 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
     const sendMessage = useCallback(
         (message: PeerMessage) => {
             try {
-                console.log("[Peer] Sending message:", message.type)
+                console.log("[Peer] Sending message type:", message.type)
                 broadcast(message)
                 // Also handle locally for host
                 if (isHost) {
+                    console.log("[Peer] Host handling message locally")
                     handleMessageRef.current(message)
                 }
             } catch (err) {
@@ -452,10 +466,15 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
             // Update local state for non-host
             if (!isHost) {
                 setRoomState((prev) => {
-                    if (!prev) return prev
+                    if (!prev) {
+                        console.log("[Peer] Cannot set ready: no room state")
+                        return prev
+                    }
                     return {
                         ...prev,
-                        players: prev.players.map((p) => (p.id === profileRef.current.id ? { ...p, isReady: ready } : p)),
+                        players: prev.players.map((p) => 
+                            p.id === profileRef.current.id ? { ...p, isReady: ready } : p
+                        ),
                     }
                 })
             }
@@ -470,12 +489,17 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
             return
         }
 
+        console.log("[Peer] Starting game...")
+        
         try {
             const deck = createDeck()
+            console.log("[Peer] Deck created, cards remaining:", deck.length)
+            
             const players = roomStateRef.current.players.map((p, i) => {
                 const cards = [deck.pop()!, deck.pop()!]
                 const score = calculatePoints(cards)
                 const handType = getHandType(cards)
+                console.log(`[Peer] Player ${p.name} cards:`, cards, "score:", score, "handType:", handType)
                 return {
                     ...p,
                     cards,
@@ -500,6 +524,8 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
                 gameState,
             }
 
+            console.log("[Peer] New room state with game:", newRoomState)
+            
             setRoomState(newRoomState)
             roomStateRef.current = newRoomState
 
@@ -510,7 +536,7 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
                 senderName: profileRef.current.name,
             }
             broadcast(startMessage)
-            console.log("[Peer] Game started successfully")
+            console.log("[Peer] Game started successfully, broadcasted to all")
         } catch (err) {
             console.error("[Peer] Error starting game:", err)
         }
@@ -539,7 +565,10 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
 
                 // Add to local state
                 setRoomState((prev) => {
-                    if (!prev) return prev
+                    if (!prev) {
+                        console.log("[Peer] Cannot add chat: no room state")
+                        return prev
+                    }
                     return {
                         ...prev,
                         messages: [...prev.messages, chatMsg],
