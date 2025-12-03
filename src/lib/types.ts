@@ -20,6 +20,7 @@ export interface Player {
     isOnline: boolean
     score?: number
     handType?: HandType
+    balance?: number
 }
 
 export interface PlayerProfile {
@@ -48,6 +49,7 @@ export type GamePhase =
     | "result" // ผลลัพธ์
 
 export interface GameState {
+    currentPlayerIndex: number
     phase: GamePhase
     players: Player[]
     dealerIndex: number
@@ -73,7 +75,20 @@ export interface ChatMessage {
 }
 
 export interface PeerMessage {
-    type: "join" | "leave" | "ready" | "start" | "bet" | "draw" | "stand" | "chat" | "sync" | "kick"
+    type:
+    | "join"
+    | "leave"
+    | "ready"
+    | "start"
+    | "bet"
+    | "draw"
+    | "stand"
+    | "chat"
+    | "sync"
+    | "kick"
+    | "game_action"
+    | "round_end"
+    | "new_round"
     payload: unknown
     senderId: string
     senderName: string

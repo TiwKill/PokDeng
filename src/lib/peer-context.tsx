@@ -2,9 +2,9 @@
 
 import { createContext, useContext, useEffect, useRef, useState, useCallback, type ReactNode } from "react"
 import Peer, { type DataConnection } from "peerjs"
-import type { PeerMessage, Player, RoomState, ChatMessage, GameState } from "./types"
+import type { PeerMessage, Player, RoomState, ChatMessage, GameState, Card as CardType } from "./types"
 import { getOrCreateProfile } from "./storage"
-import { createDeck, calculatePoints, getHandType } from "./game-utils"
+import { createDeck, calculatePoints, getHandType, shuffleDeck } from "./game-utils"
 
 interface PeerContextType {
     peerId: string | null
@@ -67,6 +67,7 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
                     isDealer: true,
                     isReady: false,
                     isOnline: true,
+                    balance: 1000,
                 },
             ],
             gameState: null,
@@ -97,47 +98,163 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
         [broadcast],
     )
 
-    // Handle incoming messages - แก้ไขให้อัพเดต state ได้ถูกต้อง
+    // Handle incoming messages
     const handleMessage = useCallback(
         (message: PeerMessage) => {
-            console.log("[Peer] Handling message type:", message.type, "from:", message.senderId)
+            console.log("[Peer] Handling message type:", message.type)
             
             setRoomState((prevState) => {
-                // สำหรับ sync message: ควรตั้งค่าใหม่ทั้งหมด (ไม่ใช้ prevState)
+                // สำหรับ sync message
                 if (message.type === "sync") {
-                    const newState = message.payload as RoomState
-                    console.log("[Peer] Setting roomState from sync:", newState)
-                    return newState
+                    console.log("[Peer] Syncing room state")
+                    return message.payload as RoomState
                 }
 
-                // สำหรับ start message: ควรตั้งค่าใหม่ทั้งหมด
+                // สำหรับ start message
                 if (message.type === "start") {
-                    const newState = message.payload as RoomState
-                    console.log("[Peer] Setting roomState from start:", newState)
-                    return newState
+                    console.log("[Peer] Game started")
+                    return message.payload as RoomState
                 }
 
-                // ถ้ายังไม่มี prevState และไม่ใช่ sync/start message ให้ return null
-                if (!prevState) {
-                    console.log("[Peer] No prevState, ignoring message type:", message.type)
-                    return prevState
+                // สำหรับ game action messages
+                if (message.type === "game_action") {
+                    const action = message.payload as {
+                        type: "draw" | "stand" | "bet"
+                        playerId: string
+                        card?: CardType
+                        amount?: number
+                    }
+                    
+                    if (!prevState || !prevState.gameState) return prevState
+                    
+                    const newPlayers = [...prevState.gameState.players]
+                    const playerIndex = newPlayers.findIndex(p => p.id === action.playerId)
+                    
+                    if (playerIndex === -1) return prevState
+                    
+                    if (action.type === "draw" && action.card) {
+                        // จั่วไพ่
+                        newPlayers[playerIndex].cards.push(action.card)
+                        const nextPlayerIndex = (prevState.gameState.currentPlayerIndex + 1) % newPlayers.length
+                        
+                        const newGameState: GameState = {
+                            ...prevState.gameState,
+                            players: newPlayers,
+                            currentPlayerIndex: nextPlayerIndex,
+                            deck: prevState.gameState.deck.filter(c => 
+                                !(c.rank === action.card?.rank && c.suit === action.card?.suit)
+                            )
+                        }
+                        
+                        return {
+                            ...prevState,
+                            gameState: newGameState
+                        }
+                    }
+                    
+                    if (action.type === "stand") {
+                        // ไม่จั่ว
+                        const nextPlayerIndex = (prevState.gameState.currentPlayerIndex + 1) % newPlayers.length
+                        const newGameState: GameState = {
+                            ...prevState.gameState,
+                            currentPlayerIndex: nextPlayerIndex
+                        }
+                        
+                        return {
+                            ...prevState,
+                            gameState: newGameState
+                        }
+                    }
                 }
+
+                // สำหรับ round end
+                if (message.type === "round_end") {
+                    if (!prevState || !prevState.gameState) return prevState
+                    
+                    const results = message.payload as {
+                        winnerId: string
+                        amount: number
+                    }[]
+                    
+                    // อัพเดตเงินผู้เล่น
+                    const newPlayers = prevState.gameState.players.map(player => {
+                        const result = results.find(r => r.winnerId === player.id)
+                        if (result) {
+                            return {
+                                ...player,
+                                balance: (player.balance || 1000) + result.amount,
+                                cards: []
+                            }
+                        }
+                        return {
+                            ...player,
+                            balance: (player.balance || 1000) - prevState.gameState!.currentBet,
+                            cards: []
+                        }
+                    })
+                    
+                    const newGameState: GameState = {
+                        ...prevState.gameState,
+                        players: newPlayers,
+                        phase: "waiting",
+                        currentPlayerIndex: 0
+                    }
+                    
+                    return {
+                        ...prevState,
+                        gameState: newGameState
+                    }
+                }
+
+                // สำหรับ new round
+                if (message.type === "new_round") {
+                    if (!prevState || !prevState.gameState) return prevState
+                    
+                    const newDeck = createDeck()
+                    const shuffledDeck = shuffleDeck(newDeck)
+                    
+                    const newPlayers = prevState.gameState.players.map((player, index) => {
+                        const cards = [shuffledDeck.pop()!, shuffledDeck.pop()!]
+                        const score = calculatePoints(cards)
+                        const handType = getHandType(cards)
+                        return {
+                            ...player,
+                            cards,
+                            score,
+                            handType,
+                            isDealer: index === 0
+                        }
+                    })
+                    
+                    const newGameState: GameState = {
+                        phase: "playing",
+                        players: newPlayers,
+                        dealerIndex: 0,
+                        currentBet: prevState.gameState.currentBet,
+                        deck: shuffledDeck,
+                        round: prevState.gameState.round + 1,
+                        currentPlayerIndex: 1 // เริ่มจากผู้เล่นคนที่ 2 (คนที่ 1 เป็นเจ้ามือ)
+                    }
+                    
+                    return {
+                        ...prevState,
+                        gameState: newGameState
+                    }
+                }
+
+                if (!prevState) return prevState
 
                 switch (message.type) {
                     case "join": {
                         const newPlayer = message.payload as Player
-                        // Check if player already exists
                         if (prevState.players.some((p) => p.id === newPlayer.id)) {
-                            console.log("[Peer] Player already exists:", newPlayer.id)
                             return prevState
                         }
                         const newState = {
                             ...prevState,
-                            players: [...prevState.players, { ...newPlayer, isOnline: true }],
+                            players: [...prevState.players, { ...newPlayer, isOnline: true, balance: 1000 }],
                         }
-                        console.log("[Peer] Added new player:", newPlayer.name)
                         if (isHost) {
-                            // Schedule sync after state update
                             setTimeout(() => syncRoomState(newState), 0)
                         }
                         return newState
@@ -149,7 +266,6 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
                             ...prevState,
                             players: prevState.players.filter((p) => p.id !== playerId),
                         }
-                        console.log("[Peer] Player left:", playerId)
                         if (isHost) {
                             setTimeout(() => syncRoomState(newState), 0)
                         }
@@ -164,7 +280,6 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
                                 p.id === playerId ? { ...p, isReady: ready } : p
                             ),
                         }
-                        console.log("[Peer] Player ready status:", playerId, ready)
                         if (isHost) {
                             setTimeout(() => syncRoomState(newState), 0)
                         }
@@ -173,16 +288,13 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
 
                     case "chat": {
                         const chatMsg = message.payload as ChatMessage
-                        const newState = {
+                        return {
                             ...prevState,
                             messages: [...prevState.messages, chatMsg],
                         }
-                        console.log("[Peer] Chat message from:", chatMsg.playerName)
-                        return newState
                     }
 
                     default:
-                        console.log("[Peer] Unknown message type:", message.type)
                         return prevState
                 }
             })
@@ -202,13 +314,13 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
             ? `pokdeng-${roomCode}`
             : `pokdeng-${roomCode}-${currentProfile.id}`
 
-        console.log(`[Peer] Creating Peer with ID: ${peerIdStr} (isHost: ${isHost})`)
+        console.log(`[Peer] Creating Peer with ID: ${peerIdStr}`)
 
         let peer: Peer
         
         try {
             peer = new Peer(peerIdStr, {
-                debug: 2, // เพิ่ม debug level
+                debug: 0,
                 config: {
                     iceServers: [
                         { urls: 'stun:stun.l.google.com:19302' },
@@ -218,20 +330,15 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
             })
         } catch (err) {
             console.error("Failed to create Peer instance:", err)
-            peer = new Peer(peerIdStr, { debug: 2 })
+            peer = new Peer(peerIdStr, { debug: 0 })
         }
 
         const setupConnectionInternal = (conn: DataConnection) => {
-            console.log(`[Peer] New connection from: ${conn.peer}`)
-            
             conn.on("open", () => {
-                console.log(`[Peer] Connection opened with: ${conn.peer}`)
                 connectionsRef.current.set(conn.peer, conn)
                 forceUpdate({})
 
-                // Send current room state to new peer
                 if (isHost && roomStateRef.current) {
-                    console.log("[Peer] Sending initial sync to new connection")
                     const syncMessage: PeerMessage = {
                         type: "sync",
                         payload: roomStateRef.current,
@@ -244,7 +351,6 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
 
             conn.on("data", (data) => {
                 try {
-                    console.log(`[Peer] Received data from ${conn.peer}:`, data)
                     handleMessageRef.current(data as PeerMessage)
                 } catch (err) {
                     console.error("[Peer] Error handling message:", err)
@@ -252,13 +358,12 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
             })
 
             conn.on("close", () => {
-                console.log(`[Peer] Connection closed: ${conn.peer}`)
                 connectionsRef.current.delete(conn.peer)
                 forceUpdate({})
             })
 
             conn.on("error", (err) => {
-                console.error(`[Peer] Connection error with ${conn.peer}:`, err)
+                console.error("[Peer] Connection error:", err)
             })
         }
 
@@ -269,36 +374,26 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
 
             if (isHost) {
                 const initialState = initializeRoomState()
-                console.log("[Peer] Host initialized room state:", initialState)
                 setRoomState(initialState)
                 roomStateRef.current = initialState
-            } else {
-                console.log("[Peer] Guest ready to join room")
             }
         })
 
         peer.on("connection", (conn) => {
-            console.log("[Peer] Incoming connection request:", conn.peer)
             setupConnectionInternal(conn)
         })
 
         peer.on("error", (err) => {
             console.error("[Peer] Peer error:", err)
             if (err.type === "unavailable-id") {
-                console.log("[Peer] ID unavailable")
-                setIsConnected(false)
-            } else if (err.type === "network" || err.type === "server-error") {
-                console.log("[Peer] Network/server error")
                 setIsConnected(false)
             }
         })
 
         peer.on("disconnected", () => {
-            console.log("[Peer] Disconnected")
             if (!peer.destroyed) {
                 setTimeout(() => {
                     if (!peer.destroyed) {
-                        console.log("[Peer] Attempting to reconnect...")
                         peer.reconnect()
                     }
                 }, 1000)
@@ -308,18 +403,13 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
         peerRef.current = peer
 
         return () => {
-            console.log("[Peer] Cleaning up Peer instance...")
-            // Close all connections first
             connectionsRef.current.forEach((conn) => {
                 try {
                     conn.close()
-                } catch (err) {
-                    // ignore
-                }
+                } catch (err) {}
             })
             connectionsRef.current.clear()
             
-            // Destroy peer
             if (peerRef.current && !peerRef.current.destroyed) {
                 peerRef.current.destroy()
                 peerRef.current = null
@@ -331,12 +421,12 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
     const joinRoom = useCallback(async (hostPeerId: string): Promise<boolean> => {
         return new Promise((resolve) => {
             if (!peerRef.current || !peerRef.current.open) {
-                console.error("[Peer] Cannot join room: Peer not initialized or not open")
+                console.error("[Peer] Cannot join room: Peer not initialized")
                 resolve(false)
                 return
             }
 
-            console.log("[Peer] Attempting to join room with host ID:", hostPeerId)
+            console.log("[Peer] Attempting to join room:", hostPeerId)
             
             try {
                 const conn = peerRef.current.connect(hostPeerId, { 
@@ -347,86 +437,75 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
 
                 const timeout = setTimeout(() => {
                     if (!resolved) {
-                        console.error("[Peer] Connection timeout to host:", hostPeerId)
                         resolved = true
                         conn.close()
                         resolve(false)
                     }
                 }, 15000)
 
-                const setupJoinConnection = (connection: DataConnection) => {
-                    connection.on("open", () => {
-                        clearTimeout(timeout)
-                        console.log("[Peer] Connection to host opened successfully")
-                        connectionsRef.current.set(connection.peer, connection)
-                        forceUpdate({})
+                conn.on("open", () => {
+                    clearTimeout(timeout)
+                    connectionsRef.current.set(conn.peer, conn)
+                    forceUpdate({})
 
-                        // Send join message
-                        const joinMessage: PeerMessage = {
-                            type: "join",
-                            payload: {
-                                id: profileRef.current.id,
-                                name: profileRef.current.name,
-                                avatar: profileRef.current.avatar,
-                                cards: [],
-                                bet: 0,
-                                isDealer: false,
-                                isReady: false,
-                                isOnline: true,
-                            } as Player,
-                            senderId: profileRef.current.id,
-                            senderName: profileRef.current.name,
+                    const joinMessage: PeerMessage = {
+                        type: "join",
+                        payload: {
+                            id: profileRef.current.id,
+                            name: profileRef.current.name,
+                            avatar: profileRef.current.avatar,
+                            cards: [],
+                            bet: 0,
+                            isDealer: false,
+                            isReady: false,
+                            isOnline: true,
+                            balance: 1000,
+                        } as Player,
+                        senderId: profileRef.current.id,
+                        senderName: profileRef.current.name,
+                    }
+                    
+                    try {
+                        conn.send(joinMessage)
+                        if (!resolved) {
+                            resolved = true
+                            resolve(true)
                         }
-                        
-                        try {
-                            connection.send(joinMessage)
-                            if (!resolved) {
-                                resolved = true
-                                console.log("[Peer] Successfully joined room, waiting for sync...")
-                                resolve(true)
-                            }
-                        } catch (err) {
-                            console.error("[Peer] Error sending join message:", err)
-                            if (!resolved) {
-                                resolved = true
-                                resolve(false)
-                            }
-                        }
-                    })
-
-                    connection.on("data", (data) => {
-                        try {
-                            console.log("[Peer] Received data from host:", data)
-                            const message = data as PeerMessage
-                            // อัพเดต state ทันที
-                            handleMessageRef.current(message)
-                        } catch (err) {
-                            console.error("[Peer] Error handling connection data:", err)
-                        }
-                    })
-
-                    connection.on("close", () => {
-                        clearTimeout(timeout)
-                        console.log("[Peer] Connection to host closed")
-                        connectionsRef.current.delete(connection.peer)
-                        forceUpdate({})
+                    } catch (err) {
+                        console.error("[Peer] Error sending join message:", err)
                         if (!resolved) {
                             resolved = true
                             resolve(false)
                         }
-                    })
+                    }
+                })
 
-                    connection.on("error", (err) => {
-                        console.error("[Peer] Connection error to host:", err)
-                        clearTimeout(timeout)
-                        if (!resolved) {
-                            resolved = true
-                            resolve(false)
-                        }
-                    })
-                }
+                conn.on("data", (data) => {
+                    try {
+                        handleMessageRef.current(data as PeerMessage)
+                    } catch (err) {
+                        console.error("[Peer] Error handling connection data:", err)
+                    }
+                })
 
-                setupJoinConnection(conn)
+                conn.on("close", () => {
+                    clearTimeout(timeout)
+                    connectionsRef.current.delete(conn.peer)
+                    forceUpdate({})
+                    if (!resolved) {
+                        resolved = true
+                        resolve(false)
+                    }
+                })
+
+                conn.on("error", (err) => {
+                    console.error("[Peer] Connection error:", err)
+                    clearTimeout(timeout)
+                    if (!resolved) {
+                        resolved = true
+                        resolve(false)
+                    }
+                })
             } catch (err) {
                 console.error("[Peer] Error connecting to host:", err)
                 resolve(false)
@@ -438,11 +517,8 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
     const sendMessage = useCallback(
         (message: PeerMessage) => {
             try {
-                console.log("[Peer] Sending message type:", message.type)
                 broadcast(message)
-                // Also handle locally for host
                 if (isHost) {
-                    console.log("[Peer] Host handling message locally")
                     handleMessageRef.current(message)
                 }
             } catch (err) {
@@ -462,44 +538,24 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
                 senderName: profileRef.current.name,
             }
             sendMessage(message)
-
-            // Update local state for non-host
-            if (!isHost) {
-                setRoomState((prev) => {
-                    if (!prev) {
-                        console.log("[Peer] Cannot set ready: no room state")
-                        return prev
-                    }
-                    return {
-                        ...prev,
-                        players: prev.players.map((p) => 
-                            p.id === profileRef.current.id ? { ...p, isReady: ready } : p
-                        ),
-                    }
-                })
-            }
         },
-        [sendMessage, isHost],
+        [sendMessage],
     )
 
     // Start game (host only)
     const startGame = useCallback(() => {
-        if (!isHost || !roomStateRef.current) {
-            console.error("[Peer] Cannot start game: not host or no room state")
-            return
-        }
+        if (!isHost || !roomStateRef.current) return
 
         console.log("[Peer] Starting game...")
         
         try {
             const deck = createDeck()
-            console.log("[Peer] Deck created, cards remaining:", deck.length)
+            const shuffledDeck = shuffleDeck(deck)
             
             const players = roomStateRef.current.players.map((p, i) => {
-                const cards = [deck.pop()!, deck.pop()!]
+                const cards = [shuffledDeck.pop()!, shuffledDeck.pop()!]
                 const score = calculatePoints(cards)
                 const handType = getHandType(cards)
-                console.log(`[Peer] Player ${p.name} cards:`, cards, "score:", score, "handType:", handType)
                 return {
                     ...p,
                     cards,
@@ -514,8 +570,9 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
                 players,
                 dealerIndex: 0,
                 currentBet: 10,
-                deck,
+                deck: shuffledDeck,
                 round: 1,
+                currentPlayerIndex: 1 // เริ่มจากผู้เล่นคนที่ 2
             }
 
             const newRoomState: RoomState = {
@@ -524,8 +581,6 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
                 gameState,
             }
 
-            console.log("[Peer] New room state with game:", newRoomState)
-            
             setRoomState(newRoomState)
             roomStateRef.current = newRoomState
 
@@ -536,7 +591,7 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
                 senderName: profileRef.current.name,
             }
             broadcast(startMessage)
-            console.log("[Peer] Game started successfully, broadcasted to all")
+            console.log("[Peer] Game started successfully")
         } catch (err) {
             console.error("[Peer] Error starting game:", err)
         }
@@ -562,19 +617,6 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
                 }
 
                 sendMessage(peerMessage)
-
-                // Add to local state
-                setRoomState((prev) => {
-                    if (!prev) {
-                        console.log("[Peer] Cannot add chat: no room state")
-                        return prev
-                    }
-                    return {
-                        ...prev,
-                        messages: [...prev.messages, chatMsg],
-                    }
-                })
-                console.log("[Peer] Chat message sent:", message)
             } catch (err) {
                 console.error("[Peer] Error sending chat:", err)
             }
@@ -584,20 +626,71 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
 
     // Draw card
     const drawCard = useCallback(() => {
-        console.log("[Peer] Draw card")
-    }, [])
+        if (!roomStateRef.current?.gameState) return
+
+        console.log("[Peer] Drawing card...")
+        
+        const gameState = roomStateRef.current.gameState
+        const playerIndex = gameState.players.findIndex(p => p.id === profileRef.current.id)
+        
+        if (playerIndex === -1 || playerIndex !== gameState.currentPlayerIndex) {
+            console.log("[Peer] Not your turn")
+            return
+        }
+
+        if (gameState.deck.length === 0) {
+            console.log("[Peer] No more cards in deck")
+            return
+        }
+
+        const card = gameState.deck.pop()!
+        
+        const actionMessage: PeerMessage = {
+            type: "game_action",
+            payload: {
+                type: "draw",
+                playerId: profileRef.current.id,
+                card
+            },
+            senderId: profileRef.current.id,
+            senderName: profileRef.current.name,
+        }
+
+        sendMessage(actionMessage)
+    }, [sendMessage])
 
     // Stand (not draw)
     const stand = useCallback(() => {
-        console.log("[Peer] Stand")
-    }, [])
+        if (!roomStateRef.current?.gameState) return
+
+        console.log("[Peer] Standing...")
+        
+        const gameState = roomStateRef.current.gameState
+        const playerIndex = gameState.players.findIndex(p => p.id === profileRef.current.id)
+        
+        if (playerIndex === -1 || playerIndex !== gameState.currentPlayerIndex) {
+            console.log("[Peer] Not your turn")
+            return
+        }
+
+        const actionMessage: PeerMessage = {
+            type: "game_action",
+            payload: {
+                type: "stand",
+                playerId: profileRef.current.id
+            },
+            senderId: profileRef.current.id,
+            senderName: profileRef.current.name,
+        }
+
+        sendMessage(actionMessage)
+    }, [sendMessage])
 
     // Leave room
     const leaveRoom = useCallback(() => {
         console.log("[Peer] Leaving room...")
         
         try {
-            // Send leave message if we're connected
             if (peerRef.current && peerRef.current.open) {
                 const message: PeerMessage = {
                     type: "leave",
@@ -608,7 +701,6 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
                 broadcast(message)
             }
 
-            // Close all connections
             connectionsRef.current.forEach((conn) => {
                 try {
                     conn.close()
@@ -618,19 +710,16 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
             })
             connectionsRef.current.clear()
 
-            // Destroy peer
             if (peerRef.current && !peerRef.current.destroyed) {
                 peerRef.current.destroy()
                 peerRef.current = null
             }
 
-            // Reset state
             setPeerId(null)
             setIsConnected(false)
             setRoomState(null)
             roomStateRef.current = null
             
-            console.log("[Peer] Room left successfully")
         } catch (err) {
             console.error("[Peer] Error leaving room:", err)
         }
