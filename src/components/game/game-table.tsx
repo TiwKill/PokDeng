@@ -15,17 +15,18 @@ import {
     MessageCircle, LogOut, Wifi, Loader2, AlertCircle,
     Crown, Users, Clock, Award, DollarSign, RefreshCw,
     Volume2, VolumeX, Settings, Info, Timer,
-    Check
+    Check, Trophy, Star, X
 } from "lucide-react"
-import { getHandTypeName, calculatePoints } from "@/lib/game-utils"
+import { getHandTypeName, calculatePoints, getHandType } from "@/lib/game-utils"
 import { cn } from "@/lib/utils"
 
 export function GameTable() {
-    const { roomState, sendChat, leaveRoom, drawCard, stand, isHost, sendMessage, startGame } = usePeer()
+    const { roomState, sendChat, leaveRoom, drawCard, stand, isHost, sendMessage, startGame, startNewRound } = usePeer()
     const profile = getOrCreateProfile()
     const [isChatOpen, setIsChatOpen] = useState(false)
     const [isSoundOn, setIsSoundOn] = useState(true)
     const [gameTimer, setGameTimer] = useState(30)
+    const [showResults, setShowResults] = useState(false)
     const [loadingState, setLoadingState] = useState({
         isLoaded: false,
         error: null as string | null,
@@ -34,14 +35,23 @@ export function GameTable() {
 
     // Game timer effect
     useEffect(() => {
-        if (!roomState?.gameState || roomState.gameState.phase !== "playing") return
-
-        setGameTimer(30)
+        if (!roomState?.gameState || roomState.gameState.phase !== "playing") {
+            setGameTimer(30)
+            return
+        }
 
         const timer = setInterval(() => {
             setGameTimer(prev => {
-                if (prev <= 0) {
+                if (prev <= 1) {
                     clearInterval(timer)
+                    // Auto-stand when time runs out
+                    if (roomState?.gameState?.currentPlayerIndex !== undefined && roomState.gameState.currentPlayerIndex >= 0) {
+                        const currentPlayerIdx = roomState.gameState.currentPlayerIndex
+                        const currentPlayer = roomState.gameState.players[currentPlayerIdx]
+                        if (currentPlayer?.id === profile.id) {
+                            stand()
+                        }
+                    }
                     return 0
                 }
                 return prev - 1
@@ -49,12 +59,26 @@ export function GameTable() {
         }, 1000)
 
         return () => clearInterval(timer)
-    }, [roomState?.gameState?.phase, roomState?.gameState?.currentPlayerIndex])
+    }, [roomState?.gameState?.phase, roomState?.gameState?.currentPlayerIndex, profile.id, stand])
+
+    // Auto-show results when showdown
+    useEffect(() => {
+        if (roomState?.gameState?.phase === "showdown") {
+            const timer = setTimeout(() => {
+                setShowResults(true)
+            }, 1000)
+            return () => clearTimeout(timer)
+        } else {
+            setShowResults(false)
+        }
+    }, [roomState?.gameState?.phase])
 
     // Debug logging
     useEffect(() => {
         if (roomState) {
             console.log("[GameTable] roomState updated:", roomState)
+            console.log("[GameTable] Game Phase:", roomState.gameState?.phase)
+            console.log("[GameTable] Current Player Index:", roomState.gameState?.currentPlayerIndex)
 
             // Check if current player is in the room
             const currentPlayerInRoom = roomState.players.some(p => p.id === profile.id)
@@ -83,7 +107,7 @@ export function GameTable() {
                     <Loader2 className="h-12 w-12 animate-spin text-emerald-400 relative" />
                 </div>
                 <p className="text-white/80 text-lg font-medium">กำลังเชื่อมต่อกับห้องเกม...</p>
-                <p className="text-white/60 text-sm">รหัสห้อง: {window.location.pathname.split('/').pop()}</p>
+                <p className="text-white/60 text-sm">รอข้อมูลจากเซิร์ฟเวอร์</p>
             </div>
         )
     }
@@ -164,6 +188,17 @@ export function GameTable() {
                             </div>
                         </Button>
 
+                        {isHost && (
+                            <Button
+                                className="w-full h-12 bg-gradient-to-r from-yellow-600 to-amber-600 hover:from-yellow-700 hover:to-amber-700"
+                                disabled={roomState.players.length < 2 || !roomState.players.every(p => p.isReady)}
+                                onClick={startGame}
+                            >
+                                <Crown className="mr-2 h-5 w-5" />
+                                เริ่มเกม
+                            </Button>
+                        )}
+
                         <Button
                             variant="outline"
                             onClick={leaveRoom}
@@ -181,6 +216,7 @@ export function GameTable() {
     const { gameState } = roomState
     const currentPlayer = gameState.players.find((p) => p.id === profile.id)
     const otherPlayers = gameState.players.filter((p) => p.id !== profile.id)
+    const dealer = gameState.players[gameState.dealerIndex]
 
     // ถ้าไม่เจอตัวเองในเกม
     if (!currentPlayer) {
@@ -214,22 +250,41 @@ export function GameTable() {
         )
     }
 
-    const isPlayerTurn = gameState.currentPlayerIndex === gameState.players.findIndex(p => p.id === profile.id)
-    const canDrawCard = isPlayerTurn && gameState.phase === "playing" && currentPlayer.cards.length < 3
+    const currentPlayerIndex = gameState.players.findIndex(p => p.id === profile.id)
+    const isPlayerTurn = gameState.currentPlayerIndex === currentPlayerIndex
+    const canDrawCard = isPlayerTurn &&
+        gameState.phase === "playing" &&
+        currentPlayer.cards.length < 3 &&
+        (currentPlayer.score === undefined || currentPlayer.score < 8) // ไม่ได้ป๊อก 8/9
 
-    {
-        gameState.phase === "showdown" && isHost && (
-            <div className="fixed bottom-32 left-1/2 -translate-x-1/2 z-50">
-                <Button
-                    size="lg"
-                    onClick={startGame} // เรียก startGame จะทำการแจกไพ่รอบใหม่
-                    className="animate-bounce bg-yellow-500 hover:bg-yellow-600 text-black font-bold px-8 shadow-xl"
-                >
-                    เริ่มรอบต่อไป ↻
-                </Button>
-            </div>
-        )
+    // คำนวณผลลัพธ์
+    const calculateResult = (player: typeof currentPlayer) => {
+        if (gameState.phase !== "showdown" || !dealer) return 0
+
+        const playerScore = calculatePoints(player.cards)
+        const dealerScore = calculatePoints(dealer.cards)
+        const playerHandType = getHandType(player.cards)
+        const dealerHandType = getHandType(dealer.cards)
+
+        // เปรียบเทียบประเภทไพ่
+        const typeRank: Record<string, number> = {
+            "pok9": 4, "pok8": 3, "triple": 2, "straight": 1, "samColor": 1, "normal": 0
+        }
+
+        const playerTypeRank = typeRank[playerHandType] || 0
+        const dealerTypeRank = typeRank[dealerHandType] || 0
+
+        if (playerTypeRank > dealerTypeRank) return 1  // ผู้เล่นชนะ
+        if (playerTypeRank < dealerTypeRank) return -1 // ผู้เล่นแพ้
+
+        // ถ้าประเภทเดียวกัน เปรียบเทียบแต้ม
+        if (playerScore > dealerScore) return 1
+        if (playerScore < dealerScore) return -1
+
+        return 0 // เสมอ
     }
+
+    const playerResult = calculateResult(currentPlayer)
 
     return (
         <div className="min-h-screen bg-gradient-to-b from-green-900 to-emerald-950 text-white">
@@ -295,25 +350,18 @@ export function GameTable() {
                 {/* Top Players (for desktop) */}
                 <div className="hidden lg:flex justify-center mb-8">
                     <div className="flex gap-6">
-                        {otherPlayers.filter((_, i) => i < 3).map((player, i) => (
+                        {otherPlayers.filter((_, i) => i < 3).map((player) => (
                             <div key={player.id} className="w-56">
                                 <PlayerSlot
                                     player={player}
                                     isHost={player.id === roomState.hostId}
-                                    // แสดงไพ่เมื่อเป็น Showdown หรือเป็นไพ่ของเราเอง (ซึ่งอันนี้เป็น slot คนอื่น จึงดูแค่ showdown)
-                                    showCards={gameState.phase === "showdown"}
+                                    showCards={gameState.phase === "showdown" || player.cards.length === 0}
                                     position="top"
+                                    isTurn={gameState.currentPlayerIndex === gameState.players.findIndex(p => p.id === player.id)}
+                                    bet={player.bet}
                                 />
                             </div>
                         ))}
-                        {gameState.phase === "showdown" && (
-                            <div className={cn(
-                                "absolute top-0 right-0 px-2 py-1 rounded text-xs font-bold shadow-sm",
-                                (currentPlayer.balance || 0) > 1000 ? "bg-green-500 text-white" : "bg-red-500 text-white"
-                            )}>
-                                {(currentPlayer.balance || 0) > 1000 ? "+WIN" : "-LOSE"}
-                            </div>
-                        )}
                     </div>
                 </div>
 
@@ -321,25 +369,18 @@ export function GameTable() {
                 <div className="lg:hidden mb-6">
                     <div className="overflow-x-auto pb-2">
                         <div className="flex gap-3 min-w-max px-2">
-                            {otherPlayers.map((player, i) => (
+                            {otherPlayers.map((player) => (
                                 <div key={player.id} className="w-40">
                                     <PlayerSlot
                                         player={player}
                                         isHost={player.id === roomState.hostId}
-                                        // แสดงไพ่เมื่อเป็น Showdown หรือเป็นไพ่ของเราเอง (ซึ่งอันนี้เป็น slot คนอื่น จึงดูแค่ showdown)
-                                        showCards={gameState.phase === "showdown"}
+                                        showCards={gameState.phase === "showdown" || player.cards.length === 0}
                                         position="top"
+                                        isTurn={gameState.currentPlayerIndex === gameState.players.findIndex(p => p.id === player.id)}
+                                        bet={player.bet}
                                     />
                                 </div>
                             ))}
-                            {gameState.phase === "showdown" && (
-                                <div className={cn(
-                                    "absolute top-0 right-0 px-2 py-1 rounded text-xs font-bold shadow-sm",
-                                    (currentPlayer.balance || 0) > 1000 ? "bg-green-500 text-white" : "bg-red-500 text-white"
-                                )}>
-                                    {(currentPlayer.balance || 0) > 1000 ? "+WIN" : "-LOSE"}
-                                </div>
-                            )}
                         </div>
                     </div>
                 </div>
@@ -370,9 +411,20 @@ export function GameTable() {
                                             {gameState.players.length} คน
                                         </Badge>
                                     </div>
+
+                                    {gameState.phase === "playing" && gameState.currentPlayerIndex === 0 && (
+                                        <Alert className="mt-4 max-w-sm mx-auto bg-gradient-to-r from-yellow-900/30 to-amber-800/30 border-yellow-500/30">
+                                            <AlertDescription className="text-yellow-200 font-medium flex items-center justify-center gap-2">
+                                                <Crown className="h-4 w-4" />
+                                                ตาเจ้ามือกำลังเล่น...
+                                            </AlertDescription>
+                                        </Alert>
+                                    )}
+
                                     {gameState.phase === "playing" && isPlayerTurn && (
                                         <Alert className="mt-4 max-w-sm mx-auto bg-gradient-to-r from-amber-900/30 to-amber-800/30 border-amber-500/30">
-                                            <AlertDescription className="text-amber-200 font-medium">
+                                            <AlertDescription className="text-amber-200 font-medium flex items-center justify-center gap-2">
+                                                <Clock className="h-4 w-4" />
                                                 ⚡ ตาคุณ! เลือกจั่วหรือไม่จั่ว
                                             </AlertDescription>
                                         </Alert>
@@ -382,6 +434,23 @@ export function GameTable() {
                         </div>
                     </div>
                 </div>
+
+                {/* Dealer Info */}
+                {dealer && dealer.id !== profile.id && (
+                    <div className="fixed top-32 left-1/2 -translate-x-1/2 z-30">
+                        <div className="bg-gradient-to-r from-yellow-900/80 to-amber-900/80 backdrop-blur-sm rounded-full px-4 py-2 border border-yellow-500/30">
+                            <div className="flex items-center gap-2">
+                                <Crown className="h-4 w-4 text-yellow-400" />
+                                <span className="font-medium text-sm">เจ้ามือ: {dealer.name}</span>
+                                {gameState.phase === "showdown" && (
+                                    <Badge className="ml-2 bg-white/20 text-xs">
+                                        {dealer.score} แต้ม
+                                    </Badge>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                )}
 
                 {/* Current Player Area */}
                 <div className="fixed bottom-0 left-0 right-0 bg-gradient-to-t from-green-950 via-green-950/95 to-transparent pt-8 pb-4 px-2 sm:px-4">
@@ -398,13 +467,24 @@ export function GameTable() {
                                             <Crown className="h-3 w-3 text-yellow-950" />
                                         </div>
                                     )}
+                                    {isPlayerTurn && (
+                                        <div className="absolute -bottom-1 -right-1 bg-emerald-500 rounded-full p-1">
+                                            <Clock className="h-3 w-3 text-white" />
+                                        </div>
+                                    )}
                                 </div>
                                 <div>
                                     <h3 className="font-bold text-lg">{currentPlayer.name}</h3>
                                     <div className="flex items-center gap-2 text-sm text-white/70">
-                                        <span>เงิน: <span className="font-bold text-yellow-400">1,000</span></span>
+                                        <span>เงิน: <span className="font-bold text-yellow-400">{currentPlayer.balance || 1000}</span></span>
                                         <span>•</span>
-                                        <span>แต้ม: <span className="font-bold text-emerald-400">{calculatePoints(currentPlayer.cards)}</span></span>
+                                        <span>แต้ม: <span className="font-bold text-emerald-400">{currentPlayer.score || 0}</span></span>
+                                        {currentPlayer.bet > 0 && (
+                                            <>
+                                                <span>•</span>
+                                                <span>เดิมพัน: <span className="font-bold text-amber-400">{currentPlayer.bet}</span></span>
+                                            </>
+                                        )}
                                     </div>
                                 </div>
                             </div>
@@ -429,9 +509,9 @@ export function GameTable() {
                                 {currentPlayer.cards.map((card, i) => (
                                     <PlayingCard key={i} card={card} size="lg" />
                                 ))}
-                                {currentPlayer.cards.length < 3 && gameState.phase === "playing" && (
-                                    <div className="w-20 h-28 rounded-lg border-2 border-dashed border-white/20 flex items-center justify-center">
-                                        <span className="text-white/40">?</span>
+                                {currentPlayer.cards.length < 3 && gameState.phase === "playing" && canDrawCard && (
+                                    <div className="w-20 h-28 rounded-lg border-2 border-dashed border-white/20 flex items-center justify-center hover:border-emerald-400/50 hover:bg-emerald-400/10 transition-colors cursor-pointer">
+                                        <span className="text-white/40 text-2xl">?</span>
                                     </div>
                                 )}
                             </div>
@@ -459,9 +539,17 @@ export function GameTable() {
 
                             {gameState.phase === "showdown" && (
                                 <div className="text-center py-2">
-                                    <div className="inline-flex items-center gap-2 px-4 py-2 bg-white/10 rounded-full">
-                                        <Award className="h-4 w-4 text-yellow-400" />
-                                        <span className="font-medium">กำลังเปิดไพ่...</span>
+                                    <div className={cn(
+                                        "inline-flex items-center gap-2 px-4 py-2 rounded-full font-bold",
+                                        playerResult > 0 ? "bg-gradient-to-r from-green-600 to-emerald-600" :
+                                            playerResult < 0 ? "bg-gradient-to-r from-red-600 to-rose-600" :
+                                                "bg-gradient-to-r from-gray-600 to-gray-700"
+                                    )}>
+                                        <Award className="h-4 w-4" />
+                                        <span>
+                                            {playerResult > 0 ? "คุณชนะ!" :
+                                                playerResult < 0 ? "คุณแพ้!" : "เสมอ!"}
+                                        </span>
                                     </div>
                                 </div>
                             )}
@@ -488,6 +576,113 @@ export function GameTable() {
                     <Settings className="h-5 w-5" />
                 </Button>
             </div>
+
+            {/* Start New Round Button (Host only during showdown) */}
+            {gameState.phase === "showdown" && isHost && (
+                <div className="fixed bottom-32 left-1/2 -translate-x-1/2 z-50">
+                    <Button
+                        size="lg"
+                        onClick={startNewRound}
+                        className="animate-bounce bg-gradient-to-r from-yellow-500 to-amber-500 hover:from-yellow-600 hover:to-amber-600 text-black font-bold px-8 py-6 shadow-xl text-lg"
+                    >
+                        <RefreshCw className="mr-2 h-5 w-5" />
+                        เริ่มรอบต่อไป
+                    </Button>
+                </div>
+            )}
+
+            {/* Results Modal */}
+            {showResults && gameState.phase === "showdown" && (
+                <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                    <div className="bg-gradient-to-br from-emerald-800 to-green-900 rounded-2xl p-6 max-w-md w-full border-2 border-emerald-500 shadow-2xl animate-in fade-in zoom-in duration-300">
+                        <div className="flex justify-between items-center mb-6">
+                            <h3 className="text-2xl font-bold text-yellow-300 flex items-center gap-2">
+                                <Trophy className="h-6 w-6" />
+                                ผลการแข่งขัน
+                            </h3>
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => setShowResults(false)}
+                                className="text-white/60 hover:text-white hover:bg-white/10"
+                            >
+                                <X className="h-5 w-5" />
+                            </Button>
+                        </div>
+
+                        <div className="space-y-4 mb-6 max-h-96 overflow-y-auto">
+                            {gameState.players.map((player) => {
+                                const isCurrent = player.id === profile.id
+                                const isDealer = player.id === dealer?.id
+                                const result = calculateResult(player)
+                                const wonAmount = result > 0 ? gameState.currentBet : result < 0 ? -gameState.currentBet : 0
+
+                                return (
+                                    <div key={player.id} className={cn(
+                                        "flex items-center justify-between p-3 rounded-lg border",
+                                        isCurrent ? "bg-emerald-900/50 border-emerald-500/50" :
+                                            "bg-white/5 border-white/10"
+                                    )}>
+                                        <div className="flex items-center gap-3">
+                                            <div className="relative">
+                                                <div className={cn(
+                                                    "w-10 h-10 rounded-full flex items-center justify-center font-bold",
+                                                    isDealer ? "bg-gradient-to-br from-yellow-500 to-amber-500" :
+                                                        "bg-gradient-to-br from-emerald-500 to-teal-500"
+                                                )}>
+                                                    {player.avatar}
+                                                </div>
+                                                {isDealer && (
+                                                    <Crown className="absolute -top-1 -right-1 h-4 w-4 text-yellow-400" />
+                                                )}
+                                            </div>
+                                            <div>
+                                                <p className="font-medium">
+                                                    {player.name}
+                                                    {isCurrent && " (คุณ)"}
+                                                    {isDealer && " (เจ้ามือ)"}
+                                                </p>
+                                                <p className="text-sm text-white/70">
+                                                    {getHandTypeName(getHandType(player.cards))} - {calculatePoints(player.cards)} แต้ม
+                                                </p>
+                                            </div>
+                                        </div>
+                                        <div className={cn(
+                                            "font-bold text-lg",
+                                            result > 0 ? "text-green-400" :
+                                                result < 0 ? "text-red-400" : "text-white/70"
+                                        )}>
+                                            {result > 0 ? `+${wonAmount}` :
+                                                result < 0 ? `${wonAmount}` : "0"}
+                                        </div>
+                                    </div>
+                                )
+                            })}
+                        </div>
+
+                        <div className="text-center text-white/60 text-sm mb-4">
+                            ยอดเงินของคุณ: <span className="font-bold text-yellow-300">{currentPlayer.balance || 1000}</span>
+                        </div>
+
+                        {isHost ? (
+                            <Button
+                                onClick={startNewRound}
+                                className="w-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 h-12 text-lg font-bold"
+                            >
+                                เริ่มรอบต่อไป
+                            </Button>
+                        ) : (
+                            <Button
+                                variant="outline"
+                                onClick={() => setShowResults(false)}
+                                className="w-full border-white/20 text-white hover:bg-white/10 h-12"
+                            >
+                                ปิด
+                            </Button>
+                        )}
+                    </div>
+                </div>
+            )}
 
             {/* Chat Panel */}
             <ChatPanel

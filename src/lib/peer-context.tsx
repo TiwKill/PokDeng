@@ -4,7 +4,7 @@ import { createContext, useContext, useEffect, useRef, useState, useCallback, ty
 import Peer, { type DataConnection } from "peerjs"
 import type { PeerMessage, Player, RoomState, ChatMessage, GameState, Card as CardType } from "./types"
 import { getOrCreateProfile } from "./storage"
-import { createDeck, calculatePoints, getHandType, shuffleDeck, compareHands } from "./game-utils"
+import { createDeck, calculatePoints, getHandType, compareHands } from "./game-utils"
 
 interface PeerContextType {
     peerId: string | null
@@ -14,6 +14,7 @@ interface PeerContextType {
     sendMessage: (message: PeerMessage) => void
     joinRoom: (hostPeerId: string) => Promise<boolean>
     startGame: () => void
+    startNewRound: () => void
     setReady: (ready: boolean) => void
     sendChat: (message: string) => void
     drawCard: () => void
@@ -368,6 +369,37 @@ export function PeerProvider({ children, roomCode, isHost }: { children: ReactNo
 
     }, [isHost, syncRoomState])
 
+    // Start new round (same as startGame but keeps existing players)
+    const startNewRound = useCallback(() => {
+        if (!isHost || !roomStateRef.current || !roomStateRef.current.gameState) return
+
+        const deck = createDeck()
+        // Deal 2 cards to everyone, preserving their balances
+        const players = roomStateRef.current.gameState.players.map((p, i) => {
+            const cards = [deck.pop()!, deck.pop()!]
+            return {
+                ...p,
+                cards,
+                score: calculatePoints(cards),
+                handType: getHandType(cards),
+                isDealer: i === 0,
+                bet: 100
+            }
+        })
+
+        const gameState: GameState = {
+            phase: "playing",
+            players,
+            dealerIndex: 0,
+            currentBet: 100,
+            deck,
+            round: roomStateRef.current.gameState.round + 1,
+            currentPlayerIndex: 1
+        }
+
+        syncRoomState({ ...roomStateRef.current, gameState })
+    }, [isHost, syncRoomState])
+
     // Send chat message
     const sendChat = useCallback((text: string) => {
         const msg: ChatMessage = {
@@ -411,7 +443,7 @@ export function PeerProvider({ children, roomCode, isHost }: { children: ReactNo
     return (
         <PeerContext.Provider value={{
             peerId, isConnected, isHost, roomState, connections: connectionsRef.current,
-            sendMessage: sendToHost, joinRoom, startGame, setReady, sendChat, drawCard, stand, leaveRoom
+            sendMessage: sendToHost, joinRoom, startGame, startNewRound, setReady, sendChat, drawCard, stand, leaveRoom
         }}>
             {children}
         </PeerContext.Provider>

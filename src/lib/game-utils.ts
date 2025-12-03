@@ -46,9 +46,6 @@ export function getHandType(cards: Card[]): HandType {
     if (cards.length === 2) {
         if (points === 9) return "pok9"
         if (points === 8) return "pok8"
-        
-        // ตอง (ในป๊อกเด้งบางที่เล่นตอง แต่ปกติตอง 3 ใบ)
-        if (cards[0].rank === cards[1].rank) return "triple" // คู่ (บางกติกา)
     }
 
     if (cards.length === 3) {
@@ -57,7 +54,15 @@ export function getHandType(cards: Card[]): HandType {
             return "triple"
         }
 
-        // เรียง & สามสี (ข้ามไปก่อนเพื่อความง่ายของ logic หลัก)
+        // เรียง
+        if (checkStraight(cards)) {
+            return "straight"
+        }
+
+        // สามสี
+        if (checkSamColor(cards)) {
+            return "samColor"
+        }
     }
 
     return "normal"
@@ -68,6 +73,8 @@ export function getHandTypeName(handType: HandType): string {
         case "pok9": return "ป็อก 9"
         case "pok8": return "ป็อก 8"
         case "triple": return "ตอง"
+        case "straight": return "เรียง"
+        case "samColor": return "สามสี"
         default: return "ธรรมดา"
     }
 }
@@ -75,15 +82,58 @@ export function getHandTypeName(handType: HandType): string {
 // Logic การชนะ: ป๊อก 9 > ป๊อก 8 > ตอง > แต้มปกติ
 // return > 0 ถ้า p1 ชนะ, < 0 ถ้า p2 ชนะ, 0 ถ้าเสมอ
 export function compareHands(p1: Player, p2: Player): number {
-    const typeRank = { "pok9": 4, "pok8": 3, "triple": 2, "straight": 1, "samColor": 1, "normal": 0 }
-    
+    const typeRank = {
+        "pok9": 4,
+        "pok8": 3,
+        "triple": 2,
+        "straight": 1,
+        "samColor": 1,
+        "normal": 0
+    }
+
     const t1 = typeRank[p1.handType || "normal"] || 0
     const t2 = typeRank[p2.handType || "normal"] || 0
 
-    if (t1 !== t2) return t1 - t2
-    
-    // ถ้าประเภทเดียวกัน วัดที่แต้ม
-    return (p1.score || 0) - (p2.score || 0)
+    if (t1 > t2) return 1
+    if (t1 < t2) return -1
+
+    // ถ้าประเภทเดียวกัน วัดที่แต้ม (สูงกว่า ชนะ)
+    const score1 = p1.score || 0
+    const score2 = p2.score || 0
+
+    if (score1 > score2) return 1
+    if (score1 < score2) return -1
+
+    // ถ้าแต้มเท่ากัน
+    return 0
+}
+
+export function checkStraight(cards: Card[]): boolean {
+    if (cards.length !== 3) return false
+
+    // Map ranks to their sequential values for straight checking
+    const getRankValue = (rank: Rank): number => {
+        if (rank === "A") return 1
+        if (rank === "J") return 11
+        if (rank === "Q") return 12
+        if (rank === "K") return 13
+        return Number.parseInt(rank)
+    }
+
+    const values = cards.map(c => getRankValue(c.rank)).sort((a, b) => a - b)
+
+    // Check for normal straights (e.g., 2-3-4, 9-10-J)
+    if (values[0] + 1 === values[1] && values[1] + 1 === values[2]) return true
+
+    // Check for Q-K-A (12-13-1 when sorted becomes 1-12-13)
+    if (values[0] === 1 && values[1] === 12 && values[2] === 13) return true
+
+    return false
+}
+
+export function checkSamColor(cards: Card[]): boolean {
+    if (cards.length !== 3) return false
+    return cards[0].suit === cards[1].suit && cards[1].suit === cards[2].suit
 }
 
 export function generateRoomCode(): string {
