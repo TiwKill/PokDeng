@@ -50,7 +50,7 @@ export function Footer() {
 
                 <div className="flex flex-col md:flex-row justify-between items-center gap-4">
                     <p className="text-sm text-muted-foreground">© 2025 Pok9. All rights reserved.</p>
-                    <p className="text-sm text-muted-foreground">Made with ❤️ in Thailand</p>
+                    <p className="text-sm text-muted-foreground">Made with ❤️ by TiwKill</p>
                 </div>
             </div>
         </footer>
