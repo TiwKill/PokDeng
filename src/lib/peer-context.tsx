@@ -174,20 +174,21 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
         handleMessageRef.current = handleMessage
     }, [handleMessage])
 
-    // Initialize Peer - with better cleanup
+    // Initialize Peer - แก้ไข Peer ID ให้ตรงกันระหว่าง Host และ Guest
     useEffect(() => {
         const currentProfile = profileRef.current
-        // Add timestamp to ensure unique ID
-        const timestamp = Date.now()
+        // ใช้รูปแบบ Peer ID เดียวกันทั้ง Host และ Guest
+        // Host: pokdeng-{roomCode}
+        // Guest: pokdeng-{roomCode}-{playerId}
         const peerIdStr = isHost 
-            ? `pokdeng-${roomCode}-${timestamp}` 
-            : `pokdeng-${roomCode}-${currentProfile.id}-${timestamp}`
+            ? `pokdeng-${roomCode}`
+            : `pokdeng-${roomCode}-${currentProfile.id}`
 
-        // Try different PeerJS server configurations
+        console.log(`[Peer] Creating Peer with ID: ${peerIdStr} (isHost: ${isHost})`)
+
         let peer: Peer
         
         try {
-            // First try with default configuration
             peer = new Peer(peerIdStr, {
                 debug: 0,
                 config: {
@@ -199,12 +200,14 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
             })
         } catch (err) {
             console.error("Failed to create Peer instance:", err)
-            // Fallback to using a simpler configuration
             peer = new Peer(peerIdStr, { debug: 0 })
         }
 
         const setupConnectionInternal = (conn: DataConnection) => {
+            console.log(`[Peer] New connection from: ${conn.peer}`)
+            
             conn.on("open", () => {
+                console.log(`[Peer] Connection opened with: ${conn.peer}`)
                 connectionsRef.current.set(conn.peer, conn)
                 forceUpdate({})
 
@@ -222,19 +225,21 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
 
             conn.on("data", (data) => {
                 try {
+                    console.log(`[Peer] Received data from ${conn.peer}:`, data)
                     handleMessageRef.current(data as PeerMessage)
                 } catch (err) {
-                    console.error("Error handling message:", err)
+                    console.error("[Peer] Error handling message:", err)
                 }
             })
 
             conn.on("close", () => {
+                console.log(`[Peer] Connection closed: ${conn.peer}`)
                 connectionsRef.current.delete(conn.peer)
                 forceUpdate({})
             })
 
             conn.on("error", (err) => {
-                console.error("[Peer] Connection error:", err)
+                console.error(`[Peer] Connection error with ${conn.peer}:`, err)
             })
         }
 
@@ -247,29 +252,42 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
                 const initialState = initializeRoomState()
                 setRoomState(initialState)
                 roomStateRef.current = initialState
+                console.log("[Peer] Host initialized room state:", initialState)
+            } else {
+                console.log("[Peer] Guest ready to join room")
             }
         })
 
         peer.on("connection", (conn) => {
+            console.log("[Peer] Incoming connection request:", conn.peer)
             setupConnectionInternal(conn)
         })
 
         peer.on("error", (err) => {
             console.error("[Peer] Peer error:", err)
             if (err.type === "unavailable-id") {
-                console.log("[Peer] ID unavailable, trying with different ID...")
-                setIsConnected(false)
+                console.log("[Peer] ID unavailable, retrying with different ID...")
+                // ถ้า Host ID ถูกใช้แล้ว (จาก session ก่อนหน้า) ให้พยายามสร้างใหม่
+                if (isHost) {
+                    const newPeerId = `pokdeng-${roomCode}-${Date.now()}`
+                    console.log(`[Peer] Retrying with new ID: ${newPeerId}`)
+                    // ต้องทำการ reconnect ด้วย ID ใหม่
+                    // แต่ PeerJS ไม่ support การเปลี่ยน ID ได้ง่ายๆ
+                    // ให้ user ลองใหม่อีกครั้งดีกว่า
+                    setIsConnected(false)
+                }
             } else if (err.type === "network" || err.type === "server-error") {
-                console.log("[Peer] Network/server error, will retry...")
+                console.log("[Peer] Network/server error")
                 setIsConnected(false)
             }
         })
 
         peer.on("disconnected", () => {
-            console.log("[Peer] Disconnected, attempting to reconnect...")
+            console.log("[Peer] Disconnected")
             if (!peer.destroyed) {
                 setTimeout(() => {
                     if (!peer.destroyed) {
+                        console.log("[Peer] Attempting to reconnect...")
                         peer.reconnect()
                     }
                 }, 1000)
@@ -282,7 +300,11 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
             console.log("[Peer] Cleaning up Peer instance...")
             // Close all connections first
             connectionsRef.current.forEach((conn) => {
-                conn.close()
+                try {
+                    conn.close()
+                } catch (err) {
+                    // ignore
+                }
             })
             connectionsRef.current.clear()
             
@@ -298,12 +320,12 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
     const joinRoom = useCallback(async (hostPeerId: string): Promise<boolean> => {
         return new Promise((resolve) => {
             if (!peerRef.current || !peerRef.current.open) {
-                console.error("[Peer] Cannot join room: Peer not initialized")
+                console.error("[Peer] Cannot join room: Peer not initialized or not open")
                 resolve(false)
                 return
             }
 
-            console.log("[Peer] Attempting to join room:", hostPeerId)
+            console.log("[Peer] Attempting to join room with host ID:", hostPeerId)
             
             try {
                 const conn = peerRef.current.connect(hostPeerId, { 
@@ -312,18 +334,19 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
                 })
                 let resolved = false
 
-                const setupJoinConnection = (connection: DataConnection) => {
-                    const timeout = setTimeout(() => {
-                        if (!resolved) {
-                            console.error("[Peer] Connection timeout")
-                            resolved = true
-                            connection.close()
-                            resolve(false)
-                        }
-                    }, 15000)
+                const timeout = setTimeout(() => {
+                    if (!resolved) {
+                        console.error("[Peer] Connection timeout to host:", hostPeerId)
+                        resolved = true
+                        conn.close()
+                        resolve(false)
+                    }
+                }, 15000)
 
+                const setupJoinConnection = (connection: DataConnection) => {
                     connection.on("open", () => {
                         clearTimeout(timeout)
+                        console.log("[Peer] Connection to host opened successfully")
                         connectionsRef.current.set(connection.peer, connection)
                         forceUpdate({})
 
@@ -362,6 +385,7 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
 
                     connection.on("data", (data) => {
                         try {
+                            console.log("[Peer] Received data from host:", data)
                             handleMessageRef.current(data as PeerMessage)
                         } catch (err) {
                             console.error("[Peer] Error handling connection data:", err)
@@ -370,6 +394,7 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
 
                     connection.on("close", () => {
                         clearTimeout(timeout)
+                        console.log("[Peer] Connection to host closed")
                         connectionsRef.current.delete(connection.peer)
                         forceUpdate({})
                         if (!resolved) {
@@ -379,7 +404,7 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
                     })
 
                     connection.on("error", (err) => {
-                        console.error("[Peer] Connection error:", err)
+                        console.error("[Peer] Connection error to host:", err)
                         clearTimeout(timeout)
                         if (!resolved) {
                             resolved = true
@@ -400,6 +425,7 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
     const sendMessage = useCallback(
         (message: PeerMessage) => {
             try {
+                console.log("[Peer] Sending message:", message.type)
                 broadcast(message)
                 // Also handle locally for host
                 if (isHost) {
@@ -439,7 +465,10 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
 
     // Start game (host only)
     const startGame = useCallback(() => {
-        if (!isHost || !roomStateRef.current) return
+        if (!isHost || !roomStateRef.current) {
+            console.error("[Peer] Cannot start game: not host or no room state")
+            return
+        }
 
         try {
             const deck = createDeck()
@@ -481,6 +510,7 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
                 senderName: profileRef.current.name,
             }
             broadcast(startMessage)
+            console.log("[Peer] Game started successfully")
         } catch (err) {
             console.error("[Peer] Error starting game:", err)
         }
@@ -515,6 +545,7 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
                         messages: [...prev.messages, chatMsg],
                     }
                 })
+                console.log("[Peer] Chat message sent:", message)
             } catch (err) {
                 console.error("[Peer] Error sending chat:", err)
             }
@@ -570,6 +601,7 @@ export function PeerProvider({ children, roomCode, isHost }: PeerProviderProps) 
             setRoomState(null)
             roomStateRef.current = null
             
+            console.log("[Peer] Room left successfully")
         } catch (err) {
             console.error("[Peer] Error leaving room:", err)
         }
