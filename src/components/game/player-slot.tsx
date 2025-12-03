@@ -131,7 +131,7 @@ export function PlayerSlot({
                             {player.cards.map((card, i) => (
                                 <PlayingCard
                                     key={i}
-                                    card={showCards || isCurrentUser ? card : undefined}
+                                    card={(showCards || isCurrentUser) ? card : undefined}
                                     faceDown={!showCards && !isCurrentUser}
                                     size="sm"
                                     className={cn(

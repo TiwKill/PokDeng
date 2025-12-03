@@ -11,17 +11,17 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Progress } from "@/components/ui/progress"
-import { 
-  MessageCircle, LogOut, Wifi, Loader2, AlertCircle, 
-  Crown, Users, Clock, Award, DollarSign, RefreshCw,
-  Volume2, VolumeX, Settings, Info, Timer,
-  Check
+import {
+    MessageCircle, LogOut, Wifi, Loader2, AlertCircle,
+    Crown, Users, Clock, Award, DollarSign, RefreshCw,
+    Volume2, VolumeX, Settings, Info, Timer,
+    Check
 } from "lucide-react"
 import { getHandTypeName, calculatePoints } from "@/lib/game-utils"
 import { cn } from "@/lib/utils"
 
 export function GameTable() {
-    const { roomState, sendChat, leaveRoom, drawCard, stand, isHost, sendMessage } = usePeer()
+    const { roomState, sendChat, leaveRoom, drawCard, stand, isHost, sendMessage, startGame } = usePeer()
     const profile = getOrCreateProfile()
     const [isChatOpen, setIsChatOpen] = useState(false)
     const [isSoundOn, setIsSoundOn] = useState(true)
@@ -35,7 +35,9 @@ export function GameTable() {
     // Game timer effect
     useEffect(() => {
         if (!roomState?.gameState || roomState.gameState.phase !== "playing") return
-        
+
+        setGameTimer(30)
+
         const timer = setInterval(() => {
             setGameTimer(prev => {
                 if (prev <= 0) {
@@ -47,16 +49,16 @@ export function GameTable() {
         }, 1000)
 
         return () => clearInterval(timer)
-    }, [roomState?.gameState?.phase])
+    }, [roomState?.gameState?.phase, roomState?.gameState?.currentPlayerIndex])
 
     // Debug logging
     useEffect(() => {
         if (roomState) {
             console.log("[GameTable] roomState updated:", roomState)
-            
+
             // Check if current player is in the room
             const currentPlayerInRoom = roomState.players.some(p => p.id === profile.id)
-            
+
             if (!currentPlayerInRoom && !loadingState.isLoaded) {
                 setLoadingState(prev => ({
                     ...prev,
@@ -98,7 +100,7 @@ export function GameTable() {
                     <p className="text-white/70 mb-6">
                         ผู้เล่นในห้อง <span className="font-bold text-emerald-300">{roomState.players.length}</span>/6 คน
                     </p>
-                    
+
                     {/* Players grid */}
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-6">
                         {roomState.players.map((player) => (
@@ -134,8 +136,8 @@ export function GameTable() {
                     )}
 
                     <div className="space-y-3">
-                        <Button 
-                            variant={roomState.players.some(p => p.id === profile.id && p.isReady) ? "secondary" : "default"} 
+                        <Button
+                            variant={roomState.players.some(p => p.id === profile.id && p.isReady) ? "secondary" : "default"}
                             className="w-full h-12 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700"
                             onClick={() => {
                                 const isReady = roomState.players.some(p => p.id === profile.id && p.isReady)
@@ -162,8 +164,8 @@ export function GameTable() {
                             </div>
                         </Button>
 
-                        <Button 
-                            variant="outline" 
+                        <Button
+                            variant="outline"
                             onClick={leaveRoom}
                             className="w-full h-12 border-white/20 text-white hover:bg-white/10"
                         >
@@ -191,15 +193,15 @@ export function GameTable() {
                         ระบบกำลังอัพเดตข้อมูล กรุณารอสักครู่หรือลองใหม่อีกครั้ง
                     </p>
                     <div className="flex gap-3">
-                        <Button 
-                            variant="outline" 
+                        <Button
+                            variant="outline"
                             onClick={() => window.location.reload()}
                             className="flex-1 border-white/20 text-white hover:bg-white/10"
                         >
                             <RefreshCw className="mr-2 h-4 w-4" />
                             โหลดใหม่
                         </Button>
-                        <Button 
+                        <Button
                             onClick={leaveRoom}
                             className="flex-1 bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-700 hover:to-rose-700"
                         >
@@ -215,22 +217,36 @@ export function GameTable() {
     const isPlayerTurn = gameState.currentPlayerIndex === gameState.players.findIndex(p => p.id === profile.id)
     const canDrawCard = isPlayerTurn && gameState.phase === "playing" && currentPlayer.cards.length < 3
 
+    {
+        gameState.phase === "showdown" && isHost && (
+            <div className="fixed bottom-32 left-1/2 -translate-x-1/2 z-50">
+                <Button
+                    size="lg"
+                    onClick={startGame} // เรียก startGame จะทำการแจกไพ่รอบใหม่
+                    className="animate-bounce bg-yellow-500 hover:bg-yellow-600 text-black font-bold px-8 shadow-xl"
+                >
+                    เริ่มรอบต่อไป ↻
+                </Button>
+            </div>
+        )
+    }
+
     return (
         <div className="min-h-screen bg-gradient-to-b from-green-900 to-emerald-950 text-white">
             {/* Header */}
             <header className="sticky top-0 z-50 bg-green-900/80 backdrop-blur-xl border-b border-white/10 px-4 py-3">
                 <div className="max-w-6xl mx-auto flex items-center justify-between">
                     <div className="flex items-center gap-4">
-                        <Button 
-                            variant="ghost" 
-                            size="sm" 
+                        <Button
+                            variant="ghost"
+                            size="sm"
                             onClick={leaveRoom}
                             className="text-white/80 hover:text-white hover:bg-white/10"
                         >
                             <LogOut className="mr-2 h-4 w-4" />
                             <span className="hidden sm:inline">ออก</span>
                         </Button>
-                        
+
                         <div className="hidden md:flex items-center gap-4">
                             <div className="flex items-center gap-2 px-3 py-1.5 bg-white/5 rounded-lg">
                                 <Users className="h-4 w-4 text-emerald-400" />
@@ -248,9 +264,9 @@ export function GameTable() {
                             <div className="font-mono font-bold text-lg tracking-widest">{roomState.roomCode}</div>
                             <div className="text-xs text-white/60">รหัสห้อง</div>
                         </div>
-                        
+
                         <div className="h-8 w-px bg-white/20" />
-                        
+
                         <div className="flex items-center gap-2">
                             <div className={`w-3 h-3 rounded-full ${isHost ? 'bg-yellow-400' : 'bg-emerald-400'}`} />
                             <span className="text-sm">{isHost ? 'Host' : 'ผู้เล่น'}</span>
@@ -284,11 +300,20 @@ export function GameTable() {
                                 <PlayerSlot
                                     player={player}
                                     isHost={player.id === roomState.hostId}
+                                    // แสดงไพ่เมื่อเป็น Showdown หรือเป็นไพ่ของเราเอง (ซึ่งอันนี้เป็น slot คนอื่น จึงดูแค่ showdown)
                                     showCards={gameState.phase === "showdown"}
                                     position="top"
                                 />
                             </div>
                         ))}
+                        {gameState.phase === "showdown" && (
+                            <div className={cn(
+                                "absolute top-0 right-0 px-2 py-1 rounded text-xs font-bold shadow-sm",
+                                (currentPlayer.balance || 0) > 1000 ? "bg-green-500 text-white" : "bg-red-500 text-white"
+                            )}>
+                                {(currentPlayer.balance || 0) > 1000 ? "+WIN" : "-LOSE"}
+                            </div>
+                        )}
                     </div>
                 </div>
 
@@ -301,11 +326,20 @@ export function GameTable() {
                                     <PlayerSlot
                                         player={player}
                                         isHost={player.id === roomState.hostId}
+                                        // แสดงไพ่เมื่อเป็น Showdown หรือเป็นไพ่ของเราเอง (ซึ่งอันนี้เป็น slot คนอื่น จึงดูแค่ showdown)
                                         showCards={gameState.phase === "showdown"}
                                         position="top"
                                     />
                                 </div>
                             ))}
+                            {gameState.phase === "showdown" && (
+                                <div className={cn(
+                                    "absolute top-0 right-0 px-2 py-1 rounded text-xs font-bold shadow-sm",
+                                    (currentPlayer.balance || 0) > 1000 ? "bg-green-500 text-white" : "bg-red-500 text-white"
+                                )}>
+                                    {(currentPlayer.balance || 0) > 1000 ? "+WIN" : "-LOSE"}
+                                </div>
+                            )}
                         </div>
                     </div>
                 </div>
@@ -317,7 +351,7 @@ export function GameTable() {
                         <div className="relative aspect-[16/9] rounded-[40px] sm:rounded-[60px] bg-gradient-to-br from-emerald-800 to-green-900 border-4 sm:border-8 border-emerald-950 shadow-2xl overflow-hidden">
                             {/* Table Pattern */}
                             <div className="absolute inset-0 bg-[radial-gradient(circle_at_1px_1px,rgba(255,255,255,0.1)_1px,transparent_1px)] bg-[length:20px_20px]" />
-                            
+
                             {/* Center Info */}
                             <div className="absolute inset-0 flex flex-col items-center justify-center p-4">
                                 <div className="text-center">
@@ -445,7 +479,7 @@ export function GameTable() {
                 >
                     <MessageCircle className="h-5 w-5" />
                 </Button>
-                
+
                 <Button
                     variant="secondary"
                     size="icon"
