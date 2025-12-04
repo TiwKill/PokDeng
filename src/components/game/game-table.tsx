@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useMemo } from "react"
+import { useState, useEffect } from "react"
 import { usePeer } from "@/lib/peer-context"
 import { getOrCreateProfile } from "@/lib/storage"
 import { PlayingCard } from "./playing-card"
@@ -12,8 +12,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert"
 import {
     MessageCircle, LogOut, Wifi, Loader2, AlertCircle,
     Crown, Users, Clock, Award, DollarSign, RefreshCw,
-    Volume2, VolumeX, Settings, Timer,
-    Check, Trophy, X
+    Timer, Check, Trophy, X
 } from "lucide-react"
 import { getHandTypeName, calculatePoints, getHandType } from "@/lib/game-utils"
 import { cn } from "@/lib/utils"
@@ -22,7 +21,6 @@ export function GameTable() {
     const { roomState, sendChat, leaveRoom, drawCard, stand, isHost, sendMessage, startGame, startNewRound } = usePeer()
     const profile = getOrCreateProfile()
     const [isChatOpen, setIsChatOpen] = useState(false)
-    const [isSoundOn, setIsSoundOn] = useState(true)
     const [gameTimer, setGameTimer] = useState(30)
     const [showResults, setShowResults] = useState(false)
     const [loadingState, setLoadingState] = useState({
@@ -327,14 +325,6 @@ export function GameTable() {
                     </div>
 
                     <div className="flex items-center gap-2">
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => setIsSoundOn(!isSoundOn)}
-                            className="text-white/80 hover:text-white hover:bg-white/10"
-                        >
-                            {isSoundOn ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
-                        </Button>
                         <div className="flex items-center gap-2 text-emerald-400">
                             <Wifi className="h-4 w-4" />
                             <span className="text-sm">เชื่อมต่อ</span>
