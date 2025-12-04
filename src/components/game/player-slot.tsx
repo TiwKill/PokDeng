@@ -31,7 +31,7 @@ export function PlayerSlot({
     // ถ้าไม่มีผู้เล่น (Empty Slot)
     if (!player) {
         return (
-            <div className="flex flex-col items-center justify-center p-4 rounded-xl border-2 border-dashed border-white/10 bg-black/20 backdrop-blur-sm h-full min-h-[140px] w-full max-w-[180px] transition-all hover:bg-black/30">
+            <div className="flex flex-col items-center justify-center p-4 rounded-xl border-2 border-dashed border-white/10 bg-black/20 backdrop-blur-sm h-full w-full transition-all hover:bg-black/30">
                 <div className="w-12 h-12 rounded-full bg-white/5 flex items-center justify-center mb-2">
                     <User className="w-6 h-6 text-white/20" />
                 </div>
@@ -51,7 +51,7 @@ export function PlayerSlot({
             )}
 
             <Card className={cn(
-                "relative overflow-visible border-0 backdrop-blur-md shadow-xl transition-all duration-300 min-w-[200px]",
+                "relative overflow-visible border-0 backdrop-blur-md shadow-xl transition-all duration-300",
                 // Background Styling
                 isCurrentUser
                     ? "bg-slate-900/80 ring-1 ring-yellow-500/50"
