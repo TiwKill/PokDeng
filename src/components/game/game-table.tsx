@@ -7,15 +7,13 @@ import { PlayingCard } from "./playing-card"
 import { PlayerSlot } from "./player-slot"
 import { ChatPanel } from "./chat-panel"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Progress } from "@/components/ui/progress"
 import {
     MessageCircle, LogOut, Wifi, Loader2, AlertCircle,
     Crown, Users, Clock, Award, DollarSign, RefreshCw,
-    Volume2, VolumeX, Settings, Info, Timer,
-    Check, Trophy, Star, X
+    Volume2, VolumeX, Settings, Timer,
+    Check, Trophy, X
 } from "lucide-react"
 import { getHandTypeName, calculatePoints, getHandType } from "@/lib/game-utils"
 import { cn } from "@/lib/utils"
@@ -566,14 +564,6 @@ export function GameTable() {
                     className="h-12 w-12 rounded-full bg-gradient-to-br from-emerald-600 to-teal-600 shadow-lg hover:from-emerald-700 hover:to-teal-700"
                 >
                     <MessageCircle className="h-5 w-5" />
-                </Button>
-
-                <Button
-                    variant="secondary"
-                    size="icon"
-                    className="h-12 w-12 rounded-full bg-white/10 backdrop-blur-sm border border-white/20 hover:bg-white/20"
-                >
-                    <Settings className="h-5 w-5" />
                 </Button>
             </div>
 
